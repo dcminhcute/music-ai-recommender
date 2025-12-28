@@ -21,8 +21,52 @@ def load_assets():
     try:
         df = pd.read_csv("data/processed/music_data_final.csv", encoding='utf-8-sig')
         
-        with open("data/processed/bert_embeddings_music.pkl", "rb") as f:
-            embeddings = pickle.load(f)
+        # Load or generate embeddings
+        embeddings_file = Path("data/processed/bert_embeddings_music.pkl")
+        if embeddings_file.exists():
+            with open(embeddings_file, "rb") as f:
+                embeddings = pickle.load(f)
+        else:
+            st.warning("🔄 Generating embeddings for the first time... This may take 3-5 minutes.")
+            st.info("This only happens once. The embeddings will be cached for future use.")
+            
+            # Load model
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            
+            # Create mood if not exists
+            if 'mood' not in df.columns:
+                df['mood'] = df.apply(lambda x: 
+                    'Happy & Energetic' if x['valence'] >= 0.5 and x['energy'] >= 0.5
+                    else 'Sad & Calm' if x['valence'] < 0.5 and x['energy'] < 0.5
+                    else 'Sad & Energetic' if x['valence'] < 0.5 and x['energy'] >= 0.5
+                    else 'Happy & Calm' if x['valence'] >= 0.5 and x['energy'] < 0.5
+                    else 'Neutral & Energetic' if x['energy'] >= 0.5
+                    else 'Neutral & Calm', axis=1)
+            
+            # Create text for embedding
+            df['text_for_embedding'] = (
+                df['name'].fillna('') + ' ' + 
+                df['artist'].fillna('') + ' ' + 
+                df['genres'].fillna('') + ' ' + 
+                df['mood'].fillna('')
+            )
+            
+            # Generate embeddings
+            with st.spinner('Encoding tracks... Please wait.'):
+                embeddings = model.encode(
+                    df['text_for_embedding'].tolist(),
+                    show_progress_bar=False,
+                    batch_size=64,
+                    convert_to_numpy=True
+                )
+            
+            # Save for future use
+            embeddings_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(embeddings_file, 'wb') as f:
+                pickle.dump(embeddings, f)
+            
+            df = df.drop(columns=['text_for_embedding'])
+            st.success("✅ Embeddings generated and cached!")
         
         # Don't precompute full similarity matrix - compute on-demand to save memory
         
@@ -33,6 +77,7 @@ def load_assets():
         else:
             st.info("Loading BERT model...")
             model = SentenceTransformer('all-MiniLM-L6-v2')
+            model_file.parent.mkdir(parents=True, exist_ok=True)
             with open(model_file, "wb") as f:
                 pickle.dump(model, f)
         

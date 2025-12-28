@@ -1,22 +1,23 @@
 # Web Framework
-streamlit>=1.31.0
+streamlit==1.31.0
 
 # Data Processing
-pandas>=2.2.0
-numpy>=1.26.0,<2.0.0
+pandas==2.2.0
+numpy==1.26.3
 
 # Machine Learning & NLP
-sentence-transformers>=2.3.0
-scikit-learn>=1.4.0
-torch>=2.0.0
+sentence-transformers==2.3.1
+scikit-learn==1.4.0
 
 # Visualization
-matplotlib>=3.8.0
-seaborn>=0.13.0
-Pillow>=10.0.0
+matplotlib==3.8.2
+seaborn==0.13.1
 
 # HTTP Requests
-requests>=2.31.0
+requests==2.31.0
 
 # Spotify API
-spotipy>=2.23.0
+spotipy==2.23.0
+
+# Utilities
+pathlib2==2.3.7.post1

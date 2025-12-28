@@ -19,10 +19,80 @@ st.set_page_config(page_title="🎵 Music AI Recommender", layout="wide", page_i
 def load_assets():
     """Load dữ liệu và mô hình"""
     try:
-        df = pd.read_csv("data/processed/music_data_final.csv", encoding='utf-8-sig')
+        # Load data with low_memory option to avoid warnings
+        df = pd.read_csv("data/processed/music_data_final.csv", encoding='utf-8-sig', low_memory=False)
         
-        with open("data/processed/bert_embeddings_music.pkl", "rb") as f:
-            embeddings = pickle.load(f)
+        # IMPORTANT: Limit dataset size for Streamlit Cloud (Free tier has 1GB RAM)
+        # Only keep top tracks by popularity to reduce memory footprint
+        MAX_TRACKS = 20000  # Adjust based on available memory
+        if len(df) > MAX_TRACKS:
+            st.info(f"📊 Loading top {MAX_TRACKS:,} tracks by popularity (optimized for web deployment)")
+            df = df.nlargest(MAX_TRACKS, 'popularity').reset_index(drop=True)
+        
+        # Load or generate embeddings
+        embeddings_file = Path("data/processed/bert_embeddings_music.pkl")
+        if embeddings_file.exists():
+            with open(embeddings_file, "rb") as f:
+                embeddings = pickle.load(f)
+                # Verify embeddings match current dataframe
+                if len(embeddings) != len(df):
+                    st.warning("Embeddings size mismatch. Regenerating...")
+                    embeddings_file.unlink()  # Delete old file
+                    raise FileNotFoundError("Regenerating embeddings")
+        else:
+            st.warning("🔄 Generating embeddings for first-time deployment...")
+            st.info("⏳ This takes 2-4 minutes. Please be patient!")
+            
+            # Load lightweight BERT model
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            
+            # Create mood if not exists
+            if 'mood' not in df.columns:
+                df['mood'] = df.apply(lambda x: 
+                    'Happy & Energetic' if x['valence'] >= 0.5 and x['energy'] >= 0.5
+                    else 'Sad & Calm' if x['valence'] < 0.5 and x['energy'] < 0.5
+                    else 'Sad & Energetic' if x['valence'] < 0.5 and x['energy'] >= 0.5
+                    else 'Happy & Calm' if x['valence'] >= 0.5 and x['energy'] < 0.5
+                    else 'Neutral & Energetic' if x['energy'] >= 0.5
+                    else 'Neutral & Calm', axis=1)
+            
+            # Create text for embedding
+            df['text_for_embedding'] = (
+                df['name'].fillna('') + ' ' + 
+                df['artist'].fillna('') + ' ' + 
+                df['genres'].fillna('') + ' ' + 
+                df['mood'].fillna('')
+            )
+            
+            # Generate embeddings in smaller batches to avoid memory issues
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            batch_size = 32  # Smaller batch size for cloud deployment
+            all_embeddings = []
+            total_batches = (len(df) + batch_size - 1) // batch_size
+            
+            for i in range(0, len(df), batch_size):
+                batch = df['text_for_embedding'].iloc[i:i+batch_size].tolist()
+                batch_embeddings = model.encode(batch, show_progress_bar=False, convert_to_numpy=True)
+                all_embeddings.append(batch_embeddings)
+                
+                # Update progress
+                progress = min(100, int((i + batch_size) / len(df) * 100))
+                progress_bar.progress(progress)
+                status_text.text(f"Processing batch {i//batch_size + 1}/{total_batches}...")
+            
+            embeddings = np.vstack(all_embeddings)
+            progress_bar.empty()
+            status_text.empty()
+            
+            # Save for future use
+            embeddings_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(embeddings_file, 'wb') as f:
+                pickle.dump(embeddings, f)
+            
+            df = df.drop(columns=['text_for_embedding'])
+            st.success("✅ Embeddings generated and cached!")
         
         # Don't precompute full similarity matrix - compute on-demand to save memory
         
@@ -33,6 +103,7 @@ def load_assets():
         else:
             st.info("Loading BERT model...")
             model = SentenceTransformer('all-MiniLM-L6-v2')
+            model_file.parent.mkdir(parents=True, exist_ok=True)
             with open(model_file, "wb") as f:
                 pickle.dump(model, f)
         

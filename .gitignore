@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Data (too large for GitHub)
+*.pkl
+data/track_images/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models (if too large)
+models/bert_model_music.pkl
+data/processed/bert_embeddings_music.pkl

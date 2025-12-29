@@ -43,9 +43,6 @@ print("="*60)
 before_count = len(df)
 print(f"Tracks before filtering: {before_count}")
 
-# Điều kiện lọc:
-# - popularity >= 20 (loại bỏ tracks quá ít người biết)
-# - duration_ms giữa 30s - 10 phút (loại bỏ intros/outros/podcasts)
 df_clean = df[
     (df['popularity'] >= 20) & 
     (df['duration_ms'] >= 30000) & 

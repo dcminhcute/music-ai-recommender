@@ -11,6 +11,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from PIL import Image
 import io
+import time
 from generate_track_images import generate_track_image
 
 st.set_page_config(page_title="🎵 Music AI Recommender", layout="wide", page_icon="🎵")
@@ -22,8 +23,6 @@ def load_assets():
         # Load data with low_memory option to avoid warnings
         df = pd.read_csv("data/processed/music_data_final.csv", encoding='utf-8-sig', low_memory=False)
         
-        # IMPORTANT: Limit dataset size for Streamlit Cloud (Free tier has 1GB RAM)
-        # Only keep top tracks by popularity to reduce memory footprint
         MAX_TRACKS = 20000  # Adjust based on available memory
         if len(df) > MAX_TRACKS:
             st.info(f"📊 Loading top {MAX_TRACKS:,} tracks by popularity (optimized for web deployment)")
@@ -32,13 +31,29 @@ def load_assets():
         # Load or generate embeddings
         embeddings_file = Path("data/processed/bert_embeddings_music.pkl")
         if embeddings_file.exists():
-            with open(embeddings_file, "rb") as f:
-                embeddings = pickle.load(f)
-                # Verify embeddings match current dataframe
-                if len(embeddings) != len(df):
-                    st.warning("Embeddings size mismatch. Regenerating...")
-                    embeddings_file.unlink()  # Delete old file
-                    raise FileNotFoundError("Regenerating embeddings")
+            # Retry logic for Windows file locking issues
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    with open(embeddings_file, "rb") as f:
+                        embeddings = pickle.load(f)
+                    # Verify embeddings match current dataframe
+                    if len(embeddings) != len(df):
+                        st.warning("Embeddings size mismatch. Regenerating...")
+                        embeddings_file.unlink()  # Delete old file
+                        raise FileNotFoundError("Regenerating embeddings")
+                    break
+                except (PermissionError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)  # Wait before retry
+                        continue
+                    else:
+                        st.error(f"⚠️ Could not load embeddings after {max_retries} attempts. Regenerating...")
+                        try:
+                            embeddings_file.unlink()
+                        except:
+                            pass
+                        raise FileNotFoundError("Regenerating embeddings")
         else:
             st.warning("🔄 Generating embeddings for first-time deployment...")
             st.info("⏳ This takes 2-4 minutes. Please be patient!")
@@ -88,8 +103,20 @@ def load_assets():
             
             # Save for future use
             embeddings_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(embeddings_file, 'wb') as f:
-                pickle.dump(embeddings, f)
+            
+            # Retry logic for saving with Windows file locking
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    with open(embeddings_file, 'wb') as f:
+                        pickle.dump(embeddings, f)
+                    break
+                except (PermissionError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    else:
+                        st.warning(f"⚠️ Could not save embeddings to cache: {e}")
             
             df = df.drop(columns=['text_for_embedding'])
             st.success("✅ Embeddings generated and cached!")
@@ -370,26 +397,6 @@ def calculate_recall_at_k(track_name, recommendations, df, k=10):
         return retrieved_relevant / min(total_relevant, k) if total_relevant > 0 else 0.0
     except Exception as e:
         return 0.0
-
-def calculate_rmse_mae(track_name, recommendations, df):
-    """Tính RMSE và MAE dựa trên popularity similarity (normalized)"""
-    try:
-        idx = df[df['name'].str.contains(track_name, case=False, na=False)].index[0]
-        input_popularity = df.iloc[idx]['popularity']
-        
-        if recommendations is None or len(recommendations) == 0:
-            return 0.0, 0.0
-        
-        rec_popularity = recommendations['popularity'].values
-        # Normalize errors by dividing by 100 (max popularity)
-        errors = (rec_popularity - input_popularity) / 100.0
-        
-        rmse = np.sqrt(np.mean(errors ** 2)) * 100  # Scale back for display
-        mae = np.mean(np.abs(errors)) * 100
-        
-        return rmse, mae
-    except Exception as e:
-        return 0.0, 0.0
 
 # SIDEBAR
 st.sidebar.title("🎵 Filters & Settings")
@@ -708,13 +715,7 @@ with tab3:
         **📊 F1-Score**: Điểm cân bằng giữa Precision và Recall
         - Cao = cả hai chỉ số đều tốt
         
-        **📉 RMSE** (Root Mean Square Error): Sai số trung bình về độ phổ biến (normalized)
-        - Thấp = gợi ý có độ phổ biến tương đồng
-        
-        **📈 MAE** (Mean Absolute Error): Sai số tuyệt đối trung bình (normalized)
-        - Thấp = dự đoán chính xác hơn
-        
-        **💡 Cải tiến**: Sử dụng hybrid scoring thay vì chỉ genre matching đơn thuần
+        ** Cải tiến**: Sử dụng hybrid scoring thay vì chỉ genre matching đơn thuần
         """)
     
     st.markdown("---")
@@ -726,8 +727,6 @@ with tab3:
     
     precisions = []
     recalls = []
-    rmse_list = []
-    mae_list = []
     valid_tracks = []
     
     with st.spinner("🔄 Đang tính toán các chỉ số đánh giá..."):
@@ -737,18 +736,13 @@ with tab3:
             if recs is not None and len(recs) > 0:
                 precision = calculate_precision_at_k(track, recs, df, 10)
                 recall = calculate_recall_at_k(track, recs, df, 10)
-                rmse, mae = calculate_rmse_mae(track, recs, df)
                 
                 precisions.append(precision)
                 recalls.append(recall)
-                rmse_list.append(rmse)
-                mae_list.append(mae)
                 valid_tracks.append(track[:20])
     
     avg_precision = np.mean(precisions) if precisions else 0
     avg_recall = np.mean(recalls) if recalls else 0
-    avg_rmse = np.mean(rmse_list) if rmse_list else 0
-    avg_mae = np.mean(mae_list) if mae_list else 0
     f1_score = 2 * (avg_precision * avg_recall) / (avg_precision + avg_recall) if (avg_precision + avg_recall) > 0 else 0
     
     st.subheader("📊 Kết quả đánh giá tổng quan")
@@ -770,17 +764,15 @@ with tab3:
         - Hybrid scoring giúp tìm bài tương đồng về âm thanh, không chỉ thể loại
         """)
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns(2)
     col1.metric("Precision@10", f"{avg_precision*100:.1f}%", help="Tỷ lệ gợi ý chính xác (Genre 40% + Audio 40% + Mood 20%)")
     col2.metric("Recall@10", f"{avg_recall*100:.1f}%", help="Tỷ lệ bài hát liên quan được tìm thấy")
-    col3.metric("RMSE", f"{avg_rmse:.3f}", help="Sai số về độ phổ biến (càng thấp càng tốt)")
-    col4.metric("MAE", f"{avg_mae:.3f}", help="Sai số tuyệt đối trung bình (càng thấp càng tốt)")
     
-    col5, col6, col7, col8 = st.columns(4)
-    col5.metric("F1-Score", f"{f1_score*100:.1f}%", help="Điểm cân bằng giữa Precision & Recall")
-    col6.metric("Test Tracks", len(valid_tracks), help="Số bài hát dùng để test")
-    col7.metric("Dataset Size", f"{len(df):,}", help="Tổng số bài trong dataset")
-    col8.metric("Embedding Dim", "384", help="Số chiều của BERT embedding vector")
+    col3, col4, col5, col6 = st.columns(4)
+    col3.metric("F1-Score", f"{f1_score*100:.1f}%", help="Điểm cân bằng giữa Precision & Recall")
+    col4.metric("Test Tracks", len(valid_tracks), help="Số bài hát dùng để test")
+    col5.metric("Dataset Size", f"{len(df):,}", help="Tổng số bài trong dataset")
+    col6.metric("Embedding Dim", "384", help="Số chiều của BERT embedding vector")
     
     st.markdown("---")
     
@@ -788,34 +780,22 @@ with tab3:
         st.subheader("📈 Chi tiết kết quả theo từng bài test")
         st.caption("So sánh hiệu suất của model trên các bài hát phổ biến nhất")
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig, ax = plt.subplots(1, 1, figsize=(12, 5))
         
         x = np.arange(len(valid_tracks))
         width = 0.35
         
-        bars1 = axes[0].bar(x - width/2, [p*100 for p in precisions], width, label='Precision@10', color='steelblue')
-        bars2 = axes[0].bar(x + width/2, [r*100 for r in recalls[:len(precisions)]], width, label='Recall@10', color='coral')
+        bars1 = ax.bar(x - width/2, [p*100 for p in precisions], width, label='Precision@10', color='steelblue')
+        bars2 = ax.bar(x + width/2, [r*100 for r in recalls[:len(precisions)]], width, label='Recall@10', color='coral')
         
-        axes[0].set_ylabel('Score (%)', fontsize=11)
-        axes[0].set_xlabel('Track', fontsize=11)
-        axes[0].set_title('Precision@10 vs Recall@10', fontsize=12, fontweight='bold')
-        axes[0].set_xticks(x)
-        axes[0].set_xticklabels(valid_tracks, rotation=45, ha='right')
-        axes[0].legend()
-        axes[0].set_ylim(0, 110)
-        axes[0].grid(True, alpha=0.3, axis='y')
-        
-        if rmse_list and mae_list:
-            bars3 = axes[1].bar(x - width/2, rmse_list[:len(valid_tracks)], width, label='RMSE', color='forestgreen')
-            bars4 = axes[1].bar(x + width/2, mae_list[:len(valid_tracks)], width, label='MAE', color='gold')
-            
-            axes[1].set_ylabel('Error Score', fontsize=11)
-            axes[1].set_xlabel('Track', fontsize=11)
-            axes[1].set_title('RMSE vs MAE', fontsize=12, fontweight='bold')
-            axes[1].set_xticks(x)
-            axes[1].set_xticklabels(valid_tracks, rotation=45, ha='right')
-            axes[1].legend()
-            axes[1].grid(True, alpha=0.3, axis='y')
+        ax.set_ylabel('Score (%)', fontsize=11)
+        ax.set_xlabel('Track', fontsize=11)
+        ax.set_title('Precision@10 vs Recall@10', fontsize=12, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(valid_tracks, rotation=45, ha='right')
+        ax.legend()
+        ax.set_ylim(0, 110)
+        ax.grid(True, alpha=0.3, axis='y')
         
         plt.tight_layout()
         st.pyplot(fig)
